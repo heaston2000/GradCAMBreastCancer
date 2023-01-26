@@ -45,16 +45,13 @@ class PatientMetaData():
     def __len__(self):
         return self.n_samples
     
-#     def features(self):
-#         return self.n_features_x, self.n_features_y
-    
 #     def testSets(self):
 #         return self.x_test, self.y_test
     
 
 # hyper parameters
-num_epochs = 4
-batch_size = 4
+num_epochs = 5
+batch_size = 128
 learning_rate = 0.001
 
 # Pre-training stuff
@@ -62,7 +59,7 @@ classes = (1, 0) # this is wrong, change this later once we load in the data
 
 # Create the training data loader:
 meta_dataset = PatientMetaData()
-data_loader   = DataLoader(dataset=meta_dataset, batch_size = batch_size, shuffle=True)
+data_loader  = DataLoader(dataset=meta_dataset, batch_size = batch_size, shuffle=True)
 
 # NOW DEFINE THE ARCHITECTURE OF THE CNN
 class ConvNet(nn.Module):
@@ -76,20 +73,29 @@ class ConvNet(nn.Module):
             nn.ReLU()
         )
         self.block2 = nn.Sequential(
-            nn.Linear(1000000, 64), #16 * 5*5
+            nn.Linear(1000000, 128), 
+            nn.ReLU(),
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, 2)
         )
     # We need to apply the hook before the last pooling layer and after all the convolutional layers
     
     def forward(self, x):
-        x_internal = self.block1(x) 
-        x_internal = torch.flatten(x_internal)
+        x_internal = self.block1(x)
+        # Where the hook goes
+        #print(x_internal.shape)
+        x_internal = x_internal.view(-1, 1000000)
+        #print(x_internal.shape)
+        
         y_pred = self.block2(x_internal)
+        #print(y_pred)
         return y_pred
    
+
+
 def onehot(c):
-    #Vector is one hot encoded with v1 = negative , v2 = positive
+    #Vector is one hot encoded with v_1 = negative , v_2 = positive
     v = torch.zeros(2)
     v[c] = 1
     return v
@@ -98,8 +104,13 @@ def onehot(c):
 
    
    
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model = ConvNet()
+
+
+
+
+model = ConvNet().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 transform = transforms.Compose([transforms.ToTensor()])
@@ -113,41 +124,33 @@ num_steps = len(data_loader) # Need to implement the train loader depending on w
 for epoch in range(num_epochs):
     total_loss = 0
     for i, (filepaths, c) in enumerate(data_loader):
-        #images = images.to(device)
-        #labels = labels.to(device)
-        
-        avg_batch_loss = 0
+        image_tensors = torch.empty([batch_size, 512, 512])
         for j, filepath in enumerate(filepaths):
-            #print(filepath)
+            # Forward pass:
             # Image format is patientID_imageID.png
             current_mammo = Image.open(filepath)
-            image = np.array(current_mammo).shape
+            image_tensor = transform(current_mammo).squeeze()
+            image_tensors[j] = image_tensor
             
-            
+        # Put image tensors in format batch, channels, height, width
+        image_tensors = image_tensors.unsqueeze(1).to(device)
+        #c = c.to(device) # don't need to do this
+        outputs = model(image_tensors)
+        loss = criterion(outputs, c)
         
-            image_tensor = transform(current_mammo)
-            #print(image_tensor.shape)
-            # Forward pass
-            output = model(image_tensor)
-            loss = criterion(output, onehot(c[j]))
-            avg_batch_loss += loss / len(filepath)
-        total_loss += avg_batch_loss
+        total_loss += loss.detach()
         
-        # Forward pass
-        #outputs = model(images)
-        #loss = criterion(outputs, labels)
-        
-        if i > 1000:
-            break
-        elif i % 200 == 0:
-            print(f'Step: {i}, Batch Loss: {avg_batch_loss}')
+        #if i > 1000:
+           # break
+        if i % 10 == 0:
+            print(f'Step: {i}, Batch Loss: {loss}')
         
         # Backward and optimize
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
     
-    total_loss = total_loss / 1000
+    total_loss = total_loss / 29427
     print(f'epoch: {epoch}, loss: {total_loss}')
         
         
@@ -156,8 +159,8 @@ with network.eval():
     total_correct = 0
     total_guessed = 0
     
-    class_correct = [0 for i in range(10)]
-    class_total = [0 for i in range(10)]
+    class_correct = [0 for i in range(2)]
+    class_total = [0 for i in range(2)]
     
     for images, labels in test_loader:
         outputs = model(images)
