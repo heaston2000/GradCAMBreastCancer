@@ -13,6 +13,7 @@ import pandas as pd
 from PIL import Image
 from io import StringIO, BytesIO, TextIOWrapper
 from zipfile import ZipFile
+import matplotlib.pyplot as plt
 
 # Load the data (only csvs containing metadata) and stuff:
 """
@@ -50,9 +51,9 @@ class PatientMetaData():
     
 
 # hyper parameters
-num_epochs = 5
+num_epochs = 1
 batch_size = 128
-learning_rate = 0.001
+learning_rate = 0.0001
 
 # Pre-training stuff
 classes = (1, 0) # this is wrong, change this later once we load in the data
@@ -81,16 +82,34 @@ class ConvNet(nn.Module):
         )
     # We need to apply the hook before the last pooling layer and after all the convolutional layers
     
+    # Code for the hook method of GradCAM is from:
+    #   https://medium.com/@stepanulyanin/implementing-grad-cam-in-pytorch-ea0937c31e82
+    # hook for the gradients of the activations
+    def activations_hook(self, grad):
+        self.gradients = grad
+    
+    
     def forward(self, x):
         x_internal = self.block1(x)
         # Where the hook goes
+        h = x_internal.register_hook(self.activations_hook)
         #print(x_internal.shape)
+        
+        
         x_internal = x_internal.view(-1, 1000000)
         #print(x_internal.shape)
         
         y_pred = self.block2(x_internal)
         #print(y_pred)
         return y_pred
+    
+    # method for the gradient extraction
+    def get_activations_gradient(self):
+        return self.gradients
+    
+    # method for the activation exctraction
+    def get_activations(self, x):
+        return self.features_conv(x)
    
 
 
@@ -110,6 +129,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 
+
+
 model = ConvNet().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -124,7 +145,7 @@ num_steps = len(data_loader) # Need to implement the train loader depending on w
 for epoch in range(num_epochs):
     total_loss = 0
     for i, (filepaths, c) in enumerate(data_loader):
-        image_tensors = torch.empty([batch_size, 512, 512])
+        image_tensors = torch.empty([len(filepaths), 512, 512]) # len(filepaths) usually = batch size
         for j, filepath in enumerate(filepaths):
             # Forward pass:
             # Image format is patientID_imageID.png
@@ -150,12 +171,41 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
     
-    total_loss = total_loss / 29427
+    total_loss = total_loss / 29425
     print(f'epoch: {epoch}, loss: {total_loss}')
         
-        
+   
+model.eval()
+image, cancer = next(iter(data_loader))
+
+pred = model(image).argmax(dim = 1) # This is the channel for positive value of cancer
+pooled_gradients = torch.mean(gradients, dim = 0)
+
+activations = model.get_activations(image).detach()
+
+for i in range(512): #our images are 512 x 512
+    activations[:, i] *= pooled_gradients[i]
+
+heatmap = torch.mean(activations, dim=1).squeeze()
+
+heatmap = np.maximum(heatmap, 0)
+
+heatmap /= torch.max(heatmap)
+
+plt.matshow(heatmap.squeeze())
+
+import cv2
+
+for i in range(29425):
+    img = cv2.imread(Dataset[i])
+    heatmap = cv2.resize(heatmap, (img.shape[1], iimg.shape[0]))
+    heatmap = np.uint(512 * heatmap)
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    superimposed_img = heatmap * 0.4 + img
+    cv2.imwrite('./map.jpg', superimposed_img)
+
 # Evaluate the model
-with network.eval():
+with model.eval():
     total_correct = 0
     total_guessed = 0
     
