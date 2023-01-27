@@ -29,8 +29,8 @@ class PatientMetaData():
     def __init__(self):
         self.all_meta_data  = pd.read_csv("train.csv")
         # We only have 29,427 of the images 
-        self.patient_image_ids = self.all_meta_data.iloc[:29427, 1:3] # Columns for patient ID, imageID, left "L" or right "R" breast
-        self.cancer_labels  = self.all_meta_data.iloc[:29427,6]
+        self.patient_image_ids = self.all_meta_data.iloc[:29425, 1:3] # Columns for patient ID, imageID, left "L" or right "R" breast
+        self.cancer_labels  = self.all_meta_data.iloc[:29425,6]
         #print(self.patient_image_ids)
         self.n_samples = len(self.patient_image_ids)
         #print(self.n_samples)
