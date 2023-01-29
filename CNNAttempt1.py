@@ -1,5 +1,5 @@
 # This is meant to be the CNN for Breast Cancer Detection competition run by Kaggle and the Radiological Society of North America
-#   as an extension GradCAM is implemented on the dataset such that 
+#   as an extension GradCAM is implemented on the dataset such that we can see which parts of the image trigger a positive cancer detection
 
 import torch
 import torch.nn as nn
@@ -14,6 +14,7 @@ from PIL import Image
 from io import StringIO, BytesIO, TextIOWrapper
 from zipfile import ZipFile
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 
 # Load the data (only csvs containing metadata) and stuff:
 """
@@ -30,18 +31,27 @@ class PatientMetaData():
     def __init__(self):
         self.all_meta_data  = pd.read_csv("train.csv")
         # We only have 29,427 of the images 
-        self.patient_image_ids = self.all_meta_data.iloc[:29425, 1:3] # Columns for patient ID, imageID, left "L" or right "R" breast
-        self.cancer_labels  = self.all_meta_data.iloc[:29425,6]
-        #print(self.patient_image_ids)
-        self.n_samples = len(self.patient_image_ids)
-        #print(self.n_samples)
+        patient_image_ids = self.all_meta_data.iloc[:29425, 1:3] # Columns for patient ID, imageID, left "L" or right "R" breast
+        cancer_labels  = self.all_meta_data.iloc[:29425,6]
+        
+        # Now convert the incoming data into tensors:
+        self.all_x = torch.tensor(patient_image_ids.to_numpy(), dtype=torch.int)
+        self.all_y = torch.tensor(cancer_labels.to_numpy(), dtype=torch.long) # since the probability output wil be in long format
+        
+        # And partition the data into testing and training sets:
+        self.x_train, self.x_test, self.y_train, self.y_test = train_test_split(self.all_x, self.all_y, test_size=0.2)
+        self.n_samples = self.x_train.shape[0]
+        
+        #print(self.x_train)
+        #print(self.y_train.shape)
         
     def __getitem__(self, index):
-        # Return patient ID, image ID, cancer bool
-        patientID = self.patient_image_ids.iloc[index, 0]
-        imageID = self.patient_image_ids.iloc[index, 1]
+        # Return patient ID, image ID, cancer bool for the training set
+        patientID = self.x_train[index, 0].numpy()
+        imageID = self.x_train[index, 1].numpy()
+        #print(str(patientID))
         filename = "Data/" + str(patientID) + "_" + str(imageID) + ".png"
-        return filename, self.cancer_labels.iloc[index]
+        return filename, self.y_train[index]
     
     def __len__(self):
         return self.n_samples
@@ -122,26 +132,20 @@ def onehot(c):
 
 
    
+############## TRAINING ######################
    
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-
-
-
-
-
 model = ConvNet().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 transform = transforms.Compose([transforms.ToTensor()])
-#tensor_frog = transform(frog)
 
 
 
 # TRAIN LOOP
 # Images can be found here: "https://www.kaggle.com/datasets/radek1/rsna-mammography-images-as-pngs?select=images_as_pngs"
 num_steps = len(data_loader) # Need to implement the train loader depending on what the data is
+#print(num_steps)
 for epoch in range(num_epochs):
     total_loss = 0
     for i, (filepaths, c) in enumerate(data_loader):
@@ -157,6 +161,8 @@ for epoch in range(num_epochs):
         image_tensors = image_tensors.unsqueeze(1).to(device)
         #c = c.to(device) # don't need to do this
         outputs = model(image_tensors)
+        #print(outputs) # both are tensors
+        #print(c)
         loss = criterion(outputs, c)
         
         total_loss += loss.detach()
@@ -175,6 +181,9 @@ for epoch in range(num_epochs):
     print(f'epoch: {epoch}, loss: {total_loss}')
         
    
+   
+################# GRADCAM ####################   
+
 model.eval()
 image, cancer = next(iter(data_loader))
 
@@ -187,11 +196,8 @@ for i in range(512): #our images are 512 x 512
     activations[:, i] *= pooled_gradients[i]
 
 heatmap = torch.mean(activations, dim=1).squeeze()
-
 heatmap = np.maximum(heatmap, 0)
-
 heatmap /= torch.max(heatmap)
-
 plt.matshow(heatmap.squeeze())
 
 import cv2
@@ -204,7 +210,9 @@ for i in range(29425):
     superimposed_img = heatmap * 0.4 + img
     cv2.imwrite('./map.jpg', superimposed_img)
 
-# Evaluate the model
+
+
+################### TESTING #####################
 with model.eval():
     total_correct = 0
     total_guessed = 0
@@ -212,8 +220,19 @@ with model.eval():
     class_correct = [0 for i in range(2)]
     class_total = [0 for i in range(2)]
     
-    for images, labels in test_loader:
-        outputs = model(images)
+    for filepaths, labels in test_loader:
+        
+        for j, filepath in enumerate(filepaths):
+            # Forward pass:
+            # Image format is patientID_imageID.png
+            current_mammo = Image.open(filepath)
+            image_tensor = transform(current_mammo).squeeze()
+            image_tensors[j] = image_tensor
+            
+        # Put image tensors in format batch, channels, height, width
+        image_tensors = image_tensors.unsqueeze(1).to(device)
+        #c = c.to(device) # don't need to do this
+        outputs = model(image_tensors)
         
         _, predicted = torch.max(outputs, 1)
         total_guessed += labels.size(0)
