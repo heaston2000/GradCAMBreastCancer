@@ -3,7 +3,6 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as pyplot
@@ -30,7 +29,7 @@ of each .csv and once we load in those, we go through them one batch at a time a
 class PatientMetaData():
     def __init__(self):
         self.all_meta_data  = pd.read_csv("train.csv")
-        # We only have 29,427 of the images 
+        # We only have 29,425 of the images  (total dataset is around 57,000)
         patient_image_ids = self.all_meta_data.iloc[:29425, 1:3] # Columns for patient ID, imageID, left "L" or right "R" breast
         cancer_labels  = self.all_meta_data.iloc[:29425,6]
         
@@ -56,8 +55,8 @@ class PatientMetaData():
     def __len__(self):
         return self.n_samples
     
-#     def testSets(self):
-#         return self.x_test, self.y_test
+    def test_sets(self):
+        return self.x_test.numpy(), self.y_test.numpy()
     
 
 # hyper parameters
@@ -119,7 +118,7 @@ class ConvNet(nn.Module):
     
     # method for the activation exctraction
     def get_activations(self, x):
-        return self.features_conv(x)
+        return self.block1(x)
    
 
 
@@ -148,8 +147,9 @@ num_steps = len(data_loader) # Need to implement the train loader depending on w
 #print(num_steps)
 for epoch in range(num_epochs):
     total_loss = 0
+    num_iters = 0
     for i, (filepaths, c) in enumerate(data_loader):
-        image_tensors = torch.empty([len(filepaths), 512, 512]) # len(filepaths) usually = batch size
+        image_tensors = torch.empty([len(filepaths), 512, 512]) # len(filepaths) usually = batch size, but not when we reach the end of the data
         for j, filepath in enumerate(filepaths):
             # Forward pass:
             # Image format is patientID_imageID.png
@@ -164,20 +164,22 @@ for epoch in range(num_epochs):
         #print(outputs) # both are tensors
         #print(c)
         loss = criterion(outputs, c)
-        
+        num_iters += 1
         total_loss += loss.detach()
         
-        #if i > 1000:
-           # break
-        if i % 10 == 0:
+        
+        if i % 2 == 0:
             print(f'Step: {i}, Batch Loss: {loss}')
+        if i > 40:
+           break
+        
         
         # Backward and optimize
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
     
-    total_loss = total_loss / 29425
+    total_loss = total_loss / num_iters
     print(f'epoch: {epoch}, loss: {total_loss}')
         
    
@@ -185,26 +187,40 @@ for epoch in range(num_epochs):
 ################# GRADCAM ####################   
 
 model.eval()
-image, cancer = next(iter(data_loader))
 
-pred = model(image).argmax(dim = 1) # This is the channel for positive value of cancer
+# This is an example of a positive mammo:
+patientID = '236'
+imageID = '1531879119'
+path = "Data/" + patientID + "_" + imageID + ".png"
+image = Image.open(filepath)
+image_tensor = transform(image).unsqueeze(0)
+
+pred = model(image_tensor).squeeze() # This is the channel for positive value of cancer (takes argument dim=1 in the reference
+print(pred)
+#pred = pred.argmax(dim=1, requires_grad=True)
+#print(pred)
+
+pred[1].backward()
+gradients = model.get_activations_gradient()
 pooled_gradients = torch.mean(gradients, dim = 0)
 
-activations = model.get_activations(image).detach()
+activations = model.get_activations(image_tensor).detach()
 
-for i in range(512): #our images are 512 x 512
+for i in range(16): #our images are 512 x 512, but the pooled imagesare 16
     activations[:, i] *= pooled_gradients[i]
 
 heatmap = torch.mean(activations, dim=1).squeeze()
 heatmap = np.maximum(heatmap, 0)
 heatmap /= torch.max(heatmap)
+print(heatmap)
 plt.matshow(heatmap.squeeze())
+plt.show()
 
 import cv2
 
 for i in range(29425):
     img = cv2.imread(Dataset[i])
-    heatmap = cv2.resize(heatmap, (img.shape[1], iimg.shape[0]))
+    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
     heatmap = np.uint(512 * heatmap)
     heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
     superimposed_img = heatmap * 0.4 + img
@@ -213,6 +229,13 @@ for i in range(29425):
 
 
 ################### TESTING #####################
+# Return patient ID, image ID, cancer bool for the training set
+#patientID = self.x_train[index, 0].numpy()
+#imageID = self.x_train[index, 1].numpy()
+#print(str(patientID))
+#filename = "Data/" + str(patientID) + "_" + str(imageID) + ".png"
+#return filename, self.y_train[index]
+x_test, y_test = PatientMetaData.test_sets()
 with model.eval():
     total_correct = 0
     total_guessed = 0
@@ -220,26 +243,26 @@ with model.eval():
     class_correct = [0 for i in range(2)]
     class_total = [0 for i in range(2)]
     
-    for filepaths, labels in test_loader:
+    for i, (patientID, imageID) in enumerate(x_test):
+        filename = "Data/" + str(patientID) + "_" + str(imageID) + ".png"
         
-        for j, filepath in enumerate(filepaths):
-            # Forward pass:
-            # Image format is patientID_imageID.png
-            current_mammo = Image.open(filepath)
-            image_tensor = transform(current_mammo).squeeze()
-            image_tensors[j] = image_tensor
+        # Forward pass:
+        current_mammo = Image.open(filepath)
+        image_tensor = transform(current_mammo).squeeze()
+        image_tensors[i] = image_tensor
+        label = y_test[i]
+            
             
         # Put image tensors in format batch, channels, height, width
         image_tensors = image_tensors.unsqueeze(1).to(device)
-        #c = c.to(device) # don't need to do this
         outputs = model(image_tensors)
         
         _, predicted = torch.max(outputs, 1)
         total_guessed += labels.size(0)
-        total_correct += (predicted == labels).sum().item()
+        total_correct += (predicted == label).sum().item()
         
         for i in range(batch_size):
-            label = labels[i]
+            #label = labels[i]
             prediction = predicted[i]
             if (label == predicted):
                 class_correct[label] += 1
