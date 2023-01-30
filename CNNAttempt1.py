@@ -168,10 +168,10 @@ for epoch in range(num_epochs):
         total_loss += loss.detach()
         
         
-        if i % 2 == 0:
+        if i % 15 == 0:
             print(f'Step: {i}, Batch Loss: {loss}')
-        if i > 40:
-           break
+        if i > 45:
+            break
         
         
         # Backward and optimize
@@ -203,6 +203,7 @@ print(pred)
 pred[1].backward()
 gradients = model.get_activations_gradient()
 pooled_gradients = torch.mean(gradients, dim = 0)
+
 
 activations = model.get_activations(image_tensor).detach()
 
